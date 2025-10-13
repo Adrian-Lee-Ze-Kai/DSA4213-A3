@@ -3,7 +3,7 @@ import argparse
 
 from transformers import Trainer, TrainingArguments, set_seed
 
-from Model import (
+from model import (
     build_tokenizer,
     load_tokenized_agnews,
     build_model,

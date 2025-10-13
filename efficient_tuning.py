@@ -4,14 +4,22 @@ import argparse
 from transformers import Trainer, TrainingArguments, set_seed
 from peft import LoraConfig, get_peft_model, TaskType
 
-from Model import (
+from model import (
     build_tokenizer,
     load_tokenized_agnews,
     build_model,
     make_compute_metrics,
     count_trainable_params,
-    infer_lora_targets,
 )
+
+def infer_lora_targets(model_name: str):
+    name = model_name.lower()
+    if "distilbert" in name:
+        return ["q_lin", "v_lin"]
+    if "bert" in name or "roberta" in name or "deberta" in name:
+        return ["query", "value"]
+    # generic fallback for some decoder-style blocks
+    return ["q_proj", "v_proj"]
 
 def get_args():
     ap = argparse.ArgumentParser()
@@ -36,6 +44,7 @@ def main():
     base_model = build_model(args.model_name, num_labels)
 
     target_modules = infer_lora_targets(args.model_name)
+    
     lora_cfg = LoraConfig(
         task_type=TaskType.SEQ_CLS,
         r=args.lora_r,
