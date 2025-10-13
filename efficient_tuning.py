@@ -1,67 +1,61 @@
 import os
 import argparse
-
 from transformers import Trainer, TrainingArguments, set_seed
 from peft import LoraConfig, get_peft_model, TaskType
-
-from model import (
-    build_tokenizer,
-    load_tokenized_agnews,
-    build_model,
+from utilities import (
+    load_tokenized_dataset,
     make_compute_metrics,
     count_trainable_params,
 )
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
-def infer_lora_targets(model_name: str):
-    name = model_name.lower()
-    if "distilbert" in name:
-        return ["q_lin", "v_lin"]
-    if "bert" in name or "roberta" in name or "deberta" in name:
-        return ["query", "value"]
-    # generic fallback for some decoder-style blocks
-    return ["q_proj", "v_proj"]
 
 def get_args():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model_name", type=str, default="distilbert-base-uncased")
-    ap.add_argument("--epochs", type=int, default=2)
-    ap.add_argument("--lr", type=float, default=1e-3)
-    ap.add_argument("--batch_size", type=int, default=16)
-    ap.add_argument("--max_length", type=int, default=256)
-    ap.add_argument("--seed", type=int, default=42)
-    ap.add_argument("--output_dir", type=str, default="./outputs/peft")
-    ap.add_argument("--lora_r", type=int, default=8)
-    ap.add_argument("--lora_alpha", type=int, default=16)
-    ap.add_argument("--lora_dropout", type=float, default=0.1)
+    ap.add_argument("--model_name", type=str, default="distilbert-base-uncased", help="Pretrained model name or path")
+    ap.add_argument("--epochs", type=int, default=2, help="Number of training epochs")
+    ap.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
+    ap.add_argument("--batch_size", type=int, default=16, help="Batch size for training and evaluation")
+    ap.add_argument("--max_length", type=int, default=256, help="Maximum sequence length for tokenization")
+    ap.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
+    ap.add_argument("--output_dir", type=str, default="./outputs/peft", help="Directory to save the trained model")
+    ap.add_argument("--lora_r", type=int, default=8, help="LoRA rank")
+    ap.add_argument("--lora_alpha", type=int, default=16, help="LoRA alpha")
+    ap.add_argument("--lora_dropout", type=float, default=0.1, help="LoRA dropout rate")
     return ap.parse_args()
+
 
 def main():
     args = get_args()
     set_seed(args.seed)
 
-    tokenizer = build_tokenizer(args.model_name)
-    ds, collator, num_labels = load_tokenized_agnews(tokenizer, args.max_length)
-    base_model = build_model(args.model_name, num_labels)
+    # Load tokenizer dynamically based on the model name
+    tokenizer = AutoTokenizer.from_pretrained(args.model_name)
 
-    target_modules = infer_lora_targets(args.model_name)
-    
-    lora_cfg = LoraConfig(
-        task_type=TaskType.SEQ_CLS,
+    # Load dataset and tokenize using the utility function
+    ds, collator = load_tokenized_dataset("ag_news", "text", tokenizer, args.max_length)
+    num_labels = len(ds["train"].features["label"].names)
+
+    # Load model dynamically based on the model name
+    model = AutoModelForSequenceClassification.from_pretrained(args.model_name, num_labels=num_labels)
+
+    # Apply LoRA to the model
+    lora_config = LoraConfig(
+        task_type=TaskType.SEQ_CLS,  # Sequence classification task
         r=args.lora_r,
         lora_alpha=args.lora_alpha,
         lora_dropout=args.lora_dropout,
-        bias="none",
-        target_modules=target_modules,
+        target_modules=["query", "value"],  # Target modules to apply LoRA
     )
-    model = get_peft_model(base_model, lora_cfg)
+    model = get_peft_model(model, lora_config)
 
+    # Count trainable parameters using the utility function
     trainable, total, frac = count_trainable_params(model)
-    print(f"PEFT (LoRA): trainable {trainable:,} / {total:,} ({frac:.2%})")
-    model.print_trainable_parameters()
+    print(f"Efficient FT with LoRA: trainable {trainable:,} / {total:,} ({frac:.2%})")
 
-    out_dir = os.path.join(args.output_dir, args.model_name.replace("/", "_"))
+    # Define training arguments
     training_args = TrainingArguments(
-        output_dir=out_dir,
+        output_dir=os.path.join(args.output_dir, args.model_name.replace("/", "_")),
         per_device_train_batch_size=args.batch_size,
         per_device_eval_batch_size=args.batch_size,
         learning_rate=args.lr,
@@ -75,6 +69,7 @@ def main():
         report_to="none",
     )
 
+    # Define Trainer
     trainer = Trainer(
         model=model,
         args=training_args,
@@ -82,15 +77,15 @@ def main():
         eval_dataset=ds["test"],
         tokenizer=tokenizer,
         data_collator=collator,
-        compute_metrics=make_compute_metrics(),
+        compute_metrics=make_compute_metrics(["accuracy", "f1"]),
     )
 
+    # Train the model
     trainer.train()
-    metrics = trainer.evaluate()
-    print("Eval:", metrics)
-    # Saves LoRA adapters (and base config refs)
-    trainer.save_model(out_dir)
-    print("Saved to:", out_dir)
+    # Save the model
+    trainer.save_model(training_args.output_dir)
+    print("Saved to:", training_args.output_dir)
+
 
 if __name__ == "__main__":
     main()
