@@ -1,5 +1,6 @@
 import os
 import argparse
+import time
 from transformers import Trainer, TrainingArguments, set_seed
 from peft import LoraConfig, get_peft_model, TaskType
 from utilities import (
@@ -9,6 +10,14 @@ from utilities import (
 )
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
+def infer_lora_targets(model_name: str):
+     name = model_name.lower()
+     if "distilbert" in name:
+         return ["q_lin", "v_lin"]
+     if any(k in name for k in ["bert", "roberta", "deberta"]):
+         return ["query", "value"]
+     # generic fallback for many decoder/LLMs
+     return ["q_proj", "v_proj"]
 
 def get_args():
     ap = argparse.ArgumentParser()
@@ -33,20 +42,23 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
 
     # Load dataset and tokenize using the utility function
-    ds, collator = load_tokenized_dataset("ag_news", "text", tokenizer, args.max_length)
-    num_labels = len(ds["train"].features["label"].names)
+    ds, collator = load_tokenized_dataset("rotten_tomatoes", "text", tokenizer, args.max_length)
+    feat = ds["train"].features.get("labels") or ds["train"].features.get("label")
+    num_labels = getattr(feat, "num_classes", len(getattr(feat, "names", [])) or 2)
 
     # Load model dynamically based on the model name
     model = AutoModelForSequenceClassification.from_pretrained(args.model_name, num_labels=num_labels)
 
     # Apply LoRA to the model
+    target_modules = infer_lora_targets(args.model_name)
     lora_config = LoraConfig(
-        task_type=TaskType.SEQ_CLS,  # Sequence classification task
-        r=args.lora_r,
-        lora_alpha=args.lora_alpha,
-        lora_dropout=args.lora_dropout,
-        target_modules=["query", "value"],  # Target modules to apply LoRA
-    )
+         task_type=TaskType.SEQ_CLS,  # Sequence classification task
+         r=args.lora_r,
+         lora_alpha=args.lora_alpha,
+         lora_dropout=args.lora_dropout,
+         target_modules=target_modules,  # Match the architecture
+         bias="none",
+     )
     model = get_peft_model(model, lora_config)
 
     # Count trainable parameters using the utility function
@@ -57,16 +69,9 @@ def main():
     training_args = TrainingArguments(
         output_dir=os.path.join(args.output_dir, args.model_name.replace("/", "_")),
         per_device_train_batch_size=args.batch_size,
-        per_device_eval_batch_size=args.batch_size,
         learning_rate=args.lr,
         num_train_epochs=args.epochs,
         weight_decay=0.01,
-        evaluation_strategy="epoch",
-        save_strategy="epoch",
-        load_best_model_at_end=True,
-        metric_for_best_model="accuracy",
-        logging_steps=50,
-        report_to="none",
     )
 
     # Define Trainer
@@ -74,14 +79,17 @@ def main():
         model=model,
         args=training_args,
         train_dataset=ds["train"],
-        eval_dataset=ds["test"],
         tokenizer=tokenizer,
         data_collator=collator,
-        compute_metrics=make_compute_metrics(["accuracy", "f1"]),
     )
 
-    # Train the model
+    # Train the model and time it
+
+    t0 = time.perf_counter()
     trainer.train()
+    total_secs = time.perf_counter() - t0
+    print(f"Total training time (seconds): {total_secs:.2f}")
+
     # Save the model
     trainer.save_model(training_args.output_dir)
     print("Saved to:", training_args.output_dir)
