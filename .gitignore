@@ -1,0 +1,19 @@
+# Ignore all outputs by default
+outputs/**
+
+# Keep only the alias folder with the latest checkpoint you want to publish
+!outputs/**/checkpoint-latest/**
+
+# Keep root final files too (optional)
+!outputs/**/config.json
+!outputs/**/model.safetensors
+!outputs/**/tokenizer.json
+!outputs/**/tokenizer_config.json
+!outputs/**/special_tokens_map.json
+!outputs/**/vocab.txt
+
+# Always ignore trainer artifacts
+outputs/**/checkpoint-*/optimizer.pt
+outputs/**/checkpoint-*/scheduler.pt
+outputs/**/checkpoint-*/rng_state.pth
+outputs/**/checkpoint-*/trainer_state.json

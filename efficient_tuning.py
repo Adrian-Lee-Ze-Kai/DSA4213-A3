@@ -58,6 +58,7 @@ def main():
          lora_dropout=args.lora_dropout,
          target_modules=target_modules,  # Match the architecture
          bias="none",
+         modules_to_save=["classifier", "pre_classifier"],  # DistilBERT head
      )
     model = get_peft_model(model, lora_config)
 
@@ -92,6 +93,7 @@ def main():
 
     # Save the model
     trainer.save_model(training_args.output_dir)
+    AutoTokenizer.from_pretrained(args.model_name).save_pretrained(training_args.output_dir)
     print("Saved to:", training_args.output_dir)
 
 
